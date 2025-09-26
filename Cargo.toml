@@ -1,6 +1,6 @@
 [package]
 name = "anomiaos"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2025"
 
 [[bin]]
