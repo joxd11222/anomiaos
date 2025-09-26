@@ -116,6 +116,7 @@ impl Writer {
         self.column_position = 0;
         self.row_position = BUFFER_HEIGHT - 1;
     }
+
     fn clear_row(&mut self, row: usize) {
         for col in 0..BUFFER_WIDTH {
             self.buffer.chars[row][col].write(ScreenChar {
@@ -124,6 +125,7 @@ impl Writer {
             });
         }
     }
+
     pub fn clear_screen(&mut self) {
         for row in 0..BUFFER_HEIGHT {
             self.clear_row(row);
@@ -131,4 +133,110 @@ impl Writer {
         self.row_position = 0;
         self.column_position = 0;
     }
+}
+
+pub fn color_test() {
+    let mut writer = Writer {
+        row_position: 0,
+        column_position: 0,
+        color_code: ColorCode::new(Color::White, Color::Black),
+        buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+    };
+
+    for bg in 0..=15 {
+        for fg in 0..=15 {
+            writer.color_code = ColorCode::new(
+                unsafe { core::mem::transmute(fg as u8) },
+                unsafe { core::mem::transmute(bg as u8) },
+            );
+            writer.write_string("X");
+        }
+        writer.write_string("\n");
+    }
+}
+
+pub fn ascii_test() {
+    let mut writer = Writer {
+        row_position: 0,
+        column_position: 0,
+        color_code: ColorCode::new(Color::LightGray, Color::Black),
+        buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+    };
+
+    for c in 0u8..=255 {
+        writer.write_byte(c);
+    }
+}
+
+pub fn keyboard_test() {
+    let mut writer = Writer {
+        row_position: 0,
+        column_position: 0,
+        color_code: ColorCode::new(Color::LightGreen, Color::Black),
+        buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+    };
+
+    writer.write_string("Press keys to see their scancodes:\n");
+
+    loop {
+        let mut scancode: u8 = 0;
+        unsafe {
+            core::arch::asm!(
+                "in al, 0x60",
+                out("al") scancode,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        writer.write_string("Scancode: ");
+        let mut num_buf = [0u8; 20];
+        let s = int_to_string(scancode as usize, &mut num_buf);
+        writer.write_string(s);
+        writer.write_string("\n");
+        if scancode == 0x1C {
+            break;
+        }
+    }
+}
+
+pub fn math_test() {
+    let mut writer = Writer {
+        row_position: 0,
+        column_position: 0,
+        color_code: ColorCode::new(Color::Cyan, Color::Black),
+        buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+    };
+
+    writer.write_string("Basic Math Tests:\n");
+
+    let a = 5;
+    let b = 3;
+
+    writer.write_string("Addition: ");
+    let sum = a + b;
+    let mut num_buf = [0u8; 20];
+    let s = int_to_string(sum, &mut num_buf);
+    writer.write_string(s);
+    writer.write_string("\n");
+
+    writer.write_string("Subtraction: ");
+    let diff = a - b;
+    let s = int_to_string(diff, &mut num_buf);
+    writer.write_string(s);
+    writer.write_string("\n");
+
+    writer.write_string("Multiplication: ");
+    let prod = a * b;
+    let s = int_to_string(prod, &mut num_buf);
+    writer.write_string(s);
+    writer.write_string("\n");
+
+    writer.write_string("Division: ");
+    let quot = a / b;
+    let s = int_to_string(quot, &mut num_buf);
+    writer.write_string(s);
+    writer.write_string("\n");
+}
+
+pub fn panic_test() {
+    panic!("This is a test panic!");
 }
