@@ -1,0 +1,20 @@
+[package]
+name = "anomiaos"
+version = "0.1.0"
+edition = "2025"
+
+[[bin]]
+name = "anomiaos"
+test = false
+bench = false
+
+[dependencies]
+bootloader = "0.9"
+volatile = "0.2.6"
+x86_64 = "0.15.2"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
