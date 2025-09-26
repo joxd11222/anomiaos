@@ -240,3 +240,34 @@ pub fn math_test() {
 pub fn panic_test() {
     panic!("This is a test panic!");
 }
+
+pub fn file_system_test() {
+    let mut fs = crate::file_system::OsFileSystem::new();
+    let mut writer = Writer {
+        row_position: 0,
+        column_position: 0,
+        color_code: ColorCode::new(Color::Magenta, Color::Black),
+        buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+    };
+
+    writer.write_string("File System Test:\n");
+
+    match fs.write_file("test.txt", b"Hello, Anomia OS!") {
+        Ok(_) => writer.write_string("File written successfully.\n"),
+        Err(_) => {
+            writer.write_string("Error writing file\n");
+        }
+    }
+
+    match crate::file_system::new_os_file_system().read_file("test.txt") {
+        Ok(data) => {
+            for &b in data.iter() {
+                writer.write_byte(b);
+            }
+            writer.write_string("\n");
+        }
+        Err(_) => {
+            writer.write_string("fs read error\n");
+        }
+    }
+}
