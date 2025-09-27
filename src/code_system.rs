@@ -15,6 +15,11 @@ pub enum Opcode {
     JmpRel8 = 0xEB,
     Int3 = 0xCC, 
     Ret = 0xC3,
+    InputEax = 0xFE,
+    CallRel8 = 0xE8,
+    PrintEax = 0xFF,
+    Loop = 0xE2,
+    While = 0xE3,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -25,6 +30,8 @@ pub struct VirtualCpu {
     pub edx: u32,
     pub eip: usize, 
     pub flags: u32,
+    pub stack: [u8; 1024],
+    pub sp: usize,
 }
 
 impl VirtualCpu {
@@ -36,11 +43,37 @@ impl VirtualCpu {
             edx: 0,
             eip: 0,
             flags: 0,
+            stack: [0; 1024],
+            sp: 0,
         }
     }
 
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    pub fn push(&mut self, value: u32) -> Result<(), &'static str> {
+        if self.sp + 4 > self.stack.len() {
+            return Err("Stack overflow");
+        }
+        let bytes = value.to_le_bytes();
+        self.stack[self.sp..self.sp + 4].copy_from_slice(&bytes);
+        self.sp += 4;
+        Ok(())
+    }
+
+    pub fn pop(&mut self) -> Result<u32, &'static str> {
+        if self.sp < 4 {
+            return Err("Stack underflow");
+        }
+        self.sp -= 4;
+        let value = u32::from_le_bytes([
+            self.stack[self.sp],
+            self.stack[self.sp + 1],
+            self.stack[self.sp + 2],
+            self.stack[self.sp + 3],
+        ]);
+        Ok(value)
     }
 }
 
@@ -237,6 +270,61 @@ impl CodeExecutor {
                     self.memory[bytecode_len] = Opcode::Ret as u8;
                     bytecode_len += 1;
                 }
+                "in" | "input" => {
+                    if part_count < 2 { return Err("IN requires 1 operand"); }
+                    let dest = parts[1].0.trim_end_matches(',');
+                    if dest == "eax" {
+                        if bytecode_len >= self.memory.len() { return Err("Program too large"); }
+                        self.memory[bytecode_len] = Opcode::InputEax as u8;
+                        bytecode_len += 1;
+                    } else {
+                        return Err("Unsupported IN destination register");
+                    }
+                }
+                "call" => {
+                    if part_count < 2 { return Err("CALL requires 1 operand"); }
+                    if bytecode_len + 2 >= self.memory.len() { return Err("Program too large"); }
+                    self.memory[bytecode_len] = Opcode::CallRel8 as u8;
+                    if let Ok(offset) = self.parse_immediate(parts[1].0) {
+                        self.memory[bytecode_len + 1] = offset as u8;
+                        bytecode_len += 2;
+                    } else {
+                        return Err("Invalid call offset");
+                    }
+                }
+                "print" => {
+                    if part_count < 2 { return Err("PRINT requires 1 operand"); }
+                    let src = parts[1].0;
+                    if src == "eax" {
+                        if bytecode_len >= self.memory.len() { return Err("Program too large"); }
+                        self.memory[bytecode_len] = Opcode::PrintEax as u8;
+                        bytecode_len += 1;
+                    } else {
+                        return Err("Unsupported PRINT source register");
+                    }
+                }
+                "loop" => {
+                    if part_count < 2 { return Err("LOOP requires 1 operand"); }
+                    if bytecode_len + 2 >= self.memory.len() { return Err("Program too large"); }
+                    self.memory[bytecode_len] = Opcode::Loop as u8;
+                    if let Ok(offset) = self.parse_immediate(parts[1].0) {
+                        self.memory[bytecode_len + 1] = offset as u8;
+                        bytecode_len += 2;
+                    } else {
+                        return Err("Invalid loop offset");
+                    }
+                }
+                "while" => {
+                    if part_count < 2 { return Err("WHILE requires 1 operand"); }
+                    if bytecode_len + 2 >= self.memory.len() { return Err("Program too large"); }
+                    self.memory[bytecode_len] = Opcode::While as u8;
+                    if let Ok(offset) = self.parse_immediate(parts[1].0) {
+                        self.memory[bytecode_len + 1] = offset as u8;
+                        bytecode_len += 2;
+                    } else {
+                        return Err("Invalid while offset");
+                    }
+                }
                 _ => {
                     return Err("Unknown instruction");
                 }
@@ -277,7 +365,7 @@ impl CodeExecutor {
         }
     }
 
-    pub fn execute(&mut self, bytecode_len: usize, writer: &mut vga_buffer::Writer) -> Result<(), &'static str> {
+    pub fn execute(&mut self, bytecode_len: usize, fs: Option<&OsFileSystem>, writer: &mut vga_buffer::Writer) -> Result<(), &'static str> {
         self.cpu.reset();
         let mut instruction_count = 0;
 
@@ -285,10 +373,10 @@ impl CodeExecutor {
             let opcode = self.memory[self.cpu.eip];
 
             match opcode {
-                0x90 => { 
+                0x90 => {
                     self.cpu.eip += 1;
                 }
-                0xB8 => { 
+                0xB8 => {
                     if self.cpu.eip + 5 > bytecode_len { return Err("Unexpected end of program"); }
                     let imm = u32::from_le_bytes([
                         self.memory[self.cpu.eip + 1],
@@ -299,7 +387,7 @@ impl CodeExecutor {
                     self.cpu.eax = imm;
                     self.cpu.eip += 5;
                 }
-                0xBB => { 
+                0xBB => {
                     if self.cpu.eip + 5 > bytecode_len { return Err("Unexpected end of program"); }
                     let imm = u32::from_le_bytes([
                         self.memory[self.cpu.eip + 1],
@@ -310,7 +398,7 @@ impl CodeExecutor {
                     self.cpu.ebx = imm;
                     self.cpu.eip += 5;
                 }
-                0xB9 => { 
+                0xB9 => {
                     if self.cpu.eip + 5 > bytecode_len { return Err("Unexpected end of program"); }
                     let imm = u32::from_le_bytes([
                         self.memory[self.cpu.eip + 1],
@@ -321,7 +409,7 @@ impl CodeExecutor {
                     self.cpu.ecx = imm;
                     self.cpu.eip += 5;
                 }
-                0xBA => { 
+                0xBA => {
                     if self.cpu.eip + 5 > bytecode_len { return Err("Unexpected end of program"); }
                     let imm = u32::from_le_bytes([
                         self.memory[self.cpu.eip + 1],
@@ -332,17 +420,17 @@ impl CodeExecutor {
                     self.cpu.edx = imm;
                     self.cpu.eip += 5;
                 }
-                0x01 => { 
+                0x01 => {
                     if self.cpu.eip + 2 > bytecode_len { return Err("Unexpected end of program"); }
                     self.cpu.eax = self.cpu.eax.wrapping_add(self.cpu.ebx);
                     self.cpu.eip += 2;
                 }
-                0x29 => { 
+                0x29 => {
                     if self.cpu.eip + 2 > bytecode_len { return Err("Unexpected end of program"); }
                     self.cpu.eax = self.cpu.eax.wrapping_sub(self.cpu.ebx);
                     self.cpu.eip += 2;
                 }
-                0x3D => { 
+                0x3D => {
                     if self.cpu.eip + 5 > bytecode_len { return Err("Unexpected end of program"); }
                     let imm = u32::from_le_bytes([
                         self.memory[self.cpu.eip + 1],
@@ -352,31 +440,75 @@ impl CodeExecutor {
                     ]);
 
                     if self.cpu.eax == imm {
-                        self.cpu.flags |= 0x40; 
+                        self.cpu.flags |= 0x40;
                     } else {
                         self.cpu.flags &= !0x40;
                     }
                     self.cpu.eip += 5;
                 }
-                0x74 => { 
+                0x74 => {
                     if self.cpu.eip + 2 > bytecode_len { return Err("Unexpected end of program"); }
                     let offset = self.memory[self.cpu.eip + 1] as i8;
-                    if (self.cpu.flags & 0x40) != 0 { 
+                    if (self.cpu.flags & 0x40) != 0 {
                         self.cpu.eip = (self.cpu.eip as i32 + 2 + offset as i32) as usize;
                     } else {
                         self.cpu.eip += 2;
                     }
                 }
-                0xEB => { 
+                0xEB => {
                     if self.cpu.eip + 2 > bytecode_len { return Err("Unexpected end of program"); }
                     let offset = self.memory[self.cpu.eip + 1] as i8;
                     self.cpu.eip = (self.cpu.eip as i32 + 2 + offset as i32) as usize;
                 }
-                0xCC => { 
+                0xFE => { 
+
+                    let value = read_u32_from_input(writer, fs)?;
+                    self.cpu.eax = value;
+                    self.cpu.eip += 1;
+                }
+                0xE8 => {
+                    if self.cpu.eip + 2 > bytecode_len { return Err("Unexpected end of program"); }
+                    let offset = self.memory[self.cpu.eip + 1] as i8;
+                    let return_address = (self.cpu.eip + 2) as u32;
+                    self.cpu.push(return_address)?;
+                    self.cpu.eip = (self.cpu.eip as i32 + 2 + offset as i32) as usize;
+                }
+                0xFF => {
+                    writer.color_code = vga_buffer::ColorCode::new(vga_buffer::Color::LightGreen, vga_buffer::Color::Black);
+                    writer.write_string("PRINT EAX: ");
+                    let mut buf = [0u8; 20];
+                    writer.write_string(&vga_buffer::int_to_string(self.cpu.eax as usize, &mut buf));
+                    writer.write_string(" (decimal) = 0x");
+                    writer.write_string(&vga_buffer::hex_to_string(self.cpu.eax, &mut buf));
+                    writer.write_string(" (hex)\n");
+                    writer.color_code = vga_buffer::ColorCode::new(vga_buffer::Color::White, vga_buffer::Color::Black);
+                    self.cpu.eip += 1;
+                }
+                0xE2 => {
+                    if self.cpu.eip + 2 > bytecode_len { return Err("Unexpected end of program"); }
+                    let offset = self.memory[self.cpu.eip + 1] as i8;
+                    self.cpu.ecx = self.cpu.ecx.wrapping_sub(1);
+                    if self.cpu.ecx != 0 {
+                        self.cpu.eip = (self.cpu.eip as i32 + 2 + offset as i32) as usize;
+                    } else {
+                        self.cpu.eip += 2;
+                    }
+                }
+                0xE3 => {
+                    if self.cpu.eip + 2 > bytecode_len { return Err("Unexpected end of program"); }
+                    let offset = self.memory[self.cpu.eip + 1] as i8;
+                    if self.cpu.eax != 0 {
+                        self.cpu.eip = (self.cpu.eip as i32 + 2 + offset as i32) as usize;
+                    } else {
+                        self.cpu.eip += 2;
+                    }
+                }
+                0xCC => {
                     break;
                 }
-                0xC3 => { 
-                    break;
+                0xC3 => {
+                    let return_address = self.cpu.pop()?;
+                    self.cpu.eip = return_address as usize;
                 }
                 _ => {
                     return Err("Unknown opcode");
@@ -451,6 +583,62 @@ impl CodeExecutor {
     }
 }
 
+fn read_u32_from_input(writer: &mut vga_buffer::Writer, fs: Option<&OsFileSystem>) -> Result<u32, &'static str> {
+
+    writer.color_code = vga_buffer::ColorCode::new(vga_buffer::Color::LightCyan, vga_buffer::Color::Black);
+    writer.write_string("Input (decimal number): ");
+    writer.color_code = vga_buffer::ColorCode::new(vga_buffer::Color::White, vga_buffer::Color::Black);
+
+    let mut line_buf = [0u8; 32];
+    let read_len = match vga_buffer::read_line(writer, &mut line_buf) {
+        Ok(n) => n,
+        Err(_) => {
+
+            if let Some(fs) = fs {
+                if let Ok(data) = fs.read_file("/stdin") {
+
+                    let s = core::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in /stdin")?;
+                    let s = s.trim();
+                    if s.is_empty() {
+                        writer.write_string("\nNo input in /stdin\n");
+                        return Err("No input available");
+                    }
+
+                    return s.parse::<u32>().map_err(|_| "Failed to parse /stdin as u32");
+                } else {
+                    writer.write_string("\nNo /stdin file found\n");
+                    return Err("No input available");
+                }
+            } else {
+                writer.write_string("\nNo input provider available\n");
+                return Err("No input available");
+            }
+        }
+    };
+
+    if read_len == 0 {
+        writer.write_string("\nNo input typed\n");
+        return Err("No input available");
+    }
+
+    let s = core::str::from_utf8(&line_buf[..read_len]).map_err(|_| "Invalid UTF-8 from input")?;
+    let s_trim = s.trim();
+    if s_trim.is_empty() {
+        writer.write_string("\nEmpty input\n");
+        return Err("Empty input");
+    }
+    match s_trim.parse::<u32>() {
+        Ok(v) => {
+            writer.write_string("\n"); 
+            Ok(v)
+        }
+        Err(_) => {
+            writer.write_string("\nInvalid number format\n");
+            Err("Failed to parse input as u32")
+        }
+    }
+}
+
 pub fn execute_code_file(
     filename: &str,
     fs: &OsFileSystem,
@@ -469,7 +657,7 @@ pub fn execute_code_file(
 
     writer.write_string("Compiling and executing CODE program...\n");
 
-    executor.execute(bytecode_len, writer)
+    executor.execute(bytecode_len, Some(fs), writer)
 }
 
 pub fn create_sample_program() -> &'static str {
