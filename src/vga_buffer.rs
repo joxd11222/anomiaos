@@ -241,33 +241,84 @@ pub fn panic_test() {
     panic!("This is a test panic!");
 }
 
+pub fn hex_to_string(mut num: u32, buffer: &mut [u8]) -> &str {
+    const HEX_CHARS: &[u8] = b"0123456789ABCDEF";
+    let mut i = 0;
+    if num == 0 {
+        buffer[0] = b'0';
+        return unsafe { core::str::from_utf8_unchecked(&buffer[0..1]) };
+    }
+    let mut temp_buf = [0u8; 8];
+    let mut temp_len = 0;
+    while num > 0 && temp_len < temp_buf.len() {
+        temp_buf[temp_len] = HEX_CHARS[(num & 0xF) as usize];
+        num >>= 4;
+        temp_len += 1;
+    }
+    for j in 0..temp_len {
+        if i < buffer.len() {
+            buffer[i] = temp_buf[temp_len - 1 - j];
+            i += 1;
+        }
+    }
+    unsafe { core::str::from_utf8_unchecked(&buffer[0..i]) }
+}
+
 pub fn file_system_test() {
-    let mut fs = crate::file_system::OsFileSystem::new();
     let mut writer = Writer {
         row_position: 0,
         column_position: 0,
-        color_code: ColorCode::new(Color::Magenta, Color::Black),
+        color_code: ColorCode::new(Color::White, Color::Black),
         buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
     };
 
     writer.write_string("File System Test:\n");
 
-    match fs.write_file("test.txt", b"Hello, Anomia OS!") {
-        Ok(_) => writer.write_string("File written successfully.\n"),
-        Err(_) => {
-            writer.write_string("Error writing file\n");
+    crate::file_system::with_fs_mut(|fs| {
+        match fs.write_file("test.txt", b"Hello, World!") {
+            Ok(_) => writer.write_string("✓ File write successful\n"),
+            Err(_) => writer.write_string("✗ File write failed\n"),
         }
-    }
+    });
 
-    match crate::file_system::new_os_file_system().read_file("test.txt") {
-        Ok(data) => {
-            for &b in data.iter() {
-                writer.write_byte(b);
+    crate::file_system::with_fs(|fs| {
+        match fs.read_file("test.txt") {
+            Ok(data) => {
+                writer.write_string("✓ File read successful: ");
+                for &byte in data {
+                    writer.write_byte(byte);
+                }
+                writer.write_string("\n");
+            },
+            Err(_) => writer.write_string("✗ File read failed\n"),
+        }
+    });
+
+    crate::file_system::with_fs(|fs| {
+        let files = fs.list_all_files();
+        let mut count = 0;
+        writer.write_string("✓ Files in system: ");
+        for file_option in &files {
+            if let Some(file_name) = file_option {
+                if let Ok(name_str) = core::str::from_utf8(file_name) {
+                    if count > 0 { writer.write_string(", "); }
+                    writer.write_string(name_str);
+                    count += 1;
+                }
             }
-            writer.write_string("\n");
         }
-        Err(_) => {
-            writer.write_string("fs read error\n");
+        if count == 0 {
+            writer.write_string("(none)");
         }
-    }
+        writer.write_string("\n");
+    });
+
+    crate::file_system::with_fs_mut(|fs| {
+        match fs.delete_file("test.txt") {
+            Ok(_) => writer.write_string("✓ File deletion successful\n"),
+            Err(_) => writer.write_string("✗ File deletion failed\n"),
+        }
+    });
+
+    writer.write_string("File system test completed.\n\n");
 }
