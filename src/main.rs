@@ -4,6 +4,7 @@
 use core::panic::PanicInfo;
 mod file_system;
 mod vga_buffer;
+mod code_system;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -120,85 +121,127 @@ fn cmd_help(writer: &mut vga_buffer::Writer) {
     writer.write_string("  nano <file>     - Simple text editor\n");
     writer.write_string("  write <file>    - Create/overwrite a file with one line of text\n");
     writer.write_string("  rm, del <file>  - Delete a file\n");
+    writer.write_string("  run <file>      - Execute a CODE assembly program\n");
+    writer.write_string("  sample          - Create a sample CODE program (demo.code)\n");
     writer.write_string("  tests           - Run system diagnostics\n");
     writer.write_string("  date            - Shows the current date and time\n");
     writer.write_string("  clear           - Clear the screen\n");
     writer.write_string("  exit, reboot    - Halts the CPU\n");
+    writer.write_string("\nCODE Language Instructions:\n");
+    writer.write_string("  mov reg, value  - Load immediate value into register (eax,ebx,ecx,edx)\n");
+    writer.write_string("  add eax, ebx    - Add EBX to EAX\n");
+    writer.write_string("  sub eax, ebx    - Subtract EBX from EAX\n");
+    writer.write_string("  cmp eax, value  - Compare EAX with immediate value\n");
+    writer.write_string("  je offset       - Jump if equal (after CMP)\n");
+    writer.write_string("  jmp offset      - Unconditional jump\n");
+    writer.write_string("  halt            - Stop program execution\n");
+    writer.write_string("  nop             - No operation\n");
+    writer.write_string("  ; comment       - Comment line\n");
 }
 
-fn cmd_ls(writer: &mut vga_buffer::Writer, fs: &file_system::OsFileSystem) {
+fn cmd_ls(writer: &mut vga_buffer::Writer) {
     writer.write_string("Directory listing:\n");
 
-    match fs.list_files() {
-        Ok(Some(file_bytes)) => {
-            if let Ok(file_str) = core::str::from_utf8(file_bytes) {
-                writer.write_string("  - ");
-                writer.write_string(file_str);
-                writer.write_byte(b'\n');
-            } else {
-                writer.write_string("  - [Invalid UTF-8 filename]\n");
+    file_system::with_fs(|fs| {
+        let all_files = fs.list_all_files();
+        let mut file_count = 0;
+        
+        for file_name_option in &all_files {
+            if let Some(file_name_bytes) = file_name_option {
+                if let Ok(file_str) = core::str::from_utf8(file_name_bytes) {
+                    writer.write_string("  - ");
+                    writer.write_string(file_str);
+                    writer.write_byte(b'\n');
+                    file_count += 1;
+                }
             }
         }
-        Ok(None) => writer.write_string("  (No files found)\n"),
-        Err(_) => writer.write_string("  (Error reading directory)\n"),
-    }
+        
+        if file_count == 0 {
+            writer.write_string("  (No files found)\n");
+        } else {
+            writer.write_string("Total files: ");
+            let mut buf = [0u8; 20];
+            writer.write_string(&vga_buffer::int_to_string(file_count, &mut buf));
+            writer.write_string("\n");
+        }
+    });
 }
 
-fn cmd_cat(writer: &mut vga_buffer::Writer, fs: &file_system::OsFileSystem, filename: Option<&str>) {
+fn cmd_cat(writer: &mut vga_buffer::Writer, filename: Option<&str>) {
     if let Some(name) = filename {
-        match fs.read_file(name) {
-            Ok(data) => {
-                for &byte in data {
-                    writer.write_byte(byte);
-                }
-                writer.write_byte(b'\n');
-            },
-            Err(_) => writer.write_string("Error: File not found.\n"),
-        }
+        file_system::with_fs(|fs| {
+            match fs.read_file(name) {
+                Ok(data) => {
+                    for &byte in data {
+                        writer.write_byte(byte);
+                    }
+                    writer.write_byte(b'\n');
+                },
+                Err(_) => writer.write_string("Error: File not found.\n"),
+            }
+        });
     } else {
         writer.write_string("Usage: cat <filename>\n");
     }
 }
 
-fn cmd_rm(writer: &mut vga_buffer::Writer, fs: &mut file_system::OsFileSystem, filename: Option<&str>) {
+fn cmd_rm(writer: &mut vga_buffer::Writer, filename: Option<&str>) {
     if let Some(name) = filename {
-        match fs.delete_file(name) {
-            Ok(_) => {
-                writer.write_string("File '");
-                writer.write_string(name);
-                writer.write_string("' deleted.\n");
-            },
-            Err(_) => writer.write_string("Error: File could not be deleted.\n"),
-        }
+        file_system::with_fs_mut(|fs| {
+            match fs.delete_file(name) {
+                Ok(_) => {
+                    writer.write_string("File '");
+                    writer.write_string(name);
+                    writer.write_string("' deleted.\n");
+                },
+                Err(_) => writer.write_string("Error: File could not be deleted.\n"),
+            }
+        });
     } else {
         writer.write_string("Usage: rm <filename>\n");
     }
 }
 
-fn cmd_nano(writer: &mut vga_buffer::Writer, fs: &mut file_system::OsFileSystem, filename: Option<&str>) {
+fn cmd_write(writer: &mut vga_buffer::Writer, filename: Option<&str>) {
+    if let Some(name) = filename {
+        writer.write_string("Enter text to write and press Enter:\n> ");
+        let mut buffer = [0u8; 1024];
+        let input = read_line(writer, &mut buffer);
+        
+        file_system::with_fs_mut(|fs| {
+            match fs.write_file(name, input.as_bytes()) {
+                 Ok(_) => writer.write_string("File written successfully.\n"),
+                 Err(_) => writer.write_string("Error: Could not write file.\n"),
+            }
+        });
+    } else {
+        writer.write_string("Usage: write <filename>\n");
+    }
+}
+
+fn cmd_nano(writer: &mut vga_buffer::Writer, filename: Option<&str>) {
     let filename_str = if let Some(name) = filename {
         name
     } else {
         writer.write_string("Usage: nano <filename>\n");
         return;
     };
-
     writer.clear_screen();
     writer.write_string("Anomia Editor - ");
     writer.write_string(filename_str);
     writer.write_string(" (Press ESC to save and exit)\n");
     writer.write_string("--------------------------------------------------\n");
-
     let mut content_buf = [0u8; 4096];
     let mut content_len = 0;
-
-    if let Ok(data) = fs.read_file(filename_str) {
-        let len = data.len().min(content_buf.len());
-        content_buf[..len].copy_from_slice(&data[..len]);
-        content_len = len;
-        for &byte in &content_buf[..content_len] { writer.write_byte(byte); }
-    }
-
+    file_system::with_fs(|fs| {
+        if let Ok(data) = fs.read_file(filename_str) {
+            let len = data.len().min(content_buf.len());
+            content_buf[..len].copy_from_slice(&data[..len]);
+            content_len = len;
+            for &byte in &content_buf[..content_len] { writer.write_byte(byte); }
+        }
+    });
     loop {
         let sc = read_key();
         match sc {
@@ -231,26 +274,55 @@ fn cmd_nano(writer: &mut vga_buffer::Writer, fs: &mut file_system::OsFileSystem,
             }
         }
     }
-
     writer.write_string("\n--------------------------------------------------\nSaving... ");
-    match fs.write_file(filename_str, &content_buf[..content_len]) {
-        Ok(_) => writer.write_string("Done.\n"),
-        Err(_) => writer.write_string("Failed!\n"),
+    file_system::with_fs_mut(|fs| {
+        match fs.write_file(filename_str, &content_buf[..content_len]) {
+            Ok(_) => writer.write_string("Done.\n"),
+            Err(_) => writer.write_string("Failed!\n"),
+        }
+    });
+}
+
+fn cmd_run(writer: &mut vga_buffer::Writer, filename: Option<&str>) {
+    if let Some(name) = filename {
+        writer.write_string("Executing CODE file: ");
+        writer.write_string(name);
+        writer.write_string("\n");
+        
+        file_system::with_fs(|fs| {
+            match code_system::execute_code_file(name, fs, writer) {
+                Ok(_) => {},
+                Err(e) => {
+                    writer.color_code = vga_buffer::ColorCode::new(vga_buffer::Color::Red, vga_buffer::Color::Black);
+                    writer.write_string("Execution error: ");
+                    writer.write_string(e);
+                    writer.write_string("\n");
+                    writer.color_code = vga_buffer::ColorCode::new(vga_buffer::Color::White, vga_buffer::Color::Black);
+                }
+            }
+        });
+    } else {
+        writer.write_string("Usage: run <filename.code>\n");
     }
 }
 
-fn cmd_write(writer: &mut vga_buffer::Writer, fs: &mut file_system::OsFileSystem, filename: Option<&str>) {
-    if let Some(name) = filename {
-        writer.write_string("Enter text to write and press Enter:\n> ");
-        let mut buffer = [0u8; 1024];
-        let input = read_line(writer, &mut buffer);
-        match fs.write_file(name, input.as_bytes()) {
-             Ok(_) => writer.write_string("File written successfully.\n"),
-             Err(_) => writer.write_string("Error: Could not write file.\n"),
+fn cmd_sample(writer: &mut vga_buffer::Writer) {
+    writer.write_string("Creating sample CODE program 'demo.code'...\n");
+    let sample_code = code_system::create_sample_program();
+    
+    file_system::with_fs_mut(|fs| {
+        match fs.write_file("demo.code", sample_code.as_bytes()) {
+            Ok(_) => {
+                writer.write_string("Sample program created successfully.\n");
+                writer.write_string("Run it with: run demo.code\n");
+            },
+            Err(_) => {
+                writer.color_code = vga_buffer::ColorCode::new(vga_buffer::Color::Red, vga_buffer::Color::Black);
+                writer.write_string("Error: Could not create sample file.\n");
+                writer.color_code = vga_buffer::ColorCode::new(vga_buffer::Color::White, vga_buffer::Color::Black);
+            }
         }
-    } else {
-        writer.write_string("Usage: write <filename>\n");
-    }
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -281,11 +353,13 @@ pub unsafe extern "C" fn _start() -> ! {
 
         match command {
             "help" => cmd_help(&mut writer),
-            "ls" | "dir" => cmd_ls(&mut writer, &fs),
-            "cat" => cmd_cat(&mut writer, &fs, arg),
-            "nano" => cmd_nano(&mut writer, &mut fs, arg),
-            "write" => cmd_write(&mut writer, &mut fs, arg),
-            "rm" | "del" => cmd_rm(&mut writer, &mut fs, arg),
+            "ls" | "dir" => cmd_ls(&mut writer),
+            "cat" => cmd_cat(&mut writer, arg),
+            "nano" => cmd_nano(&mut writer, arg),
+            "write" => cmd_write(&mut writer, arg),
+            "rm" | "del" => cmd_rm(&mut writer, arg),
+            "run" => cmd_run(&mut writer, arg),
+            "sample" => cmd_sample(&mut writer),
             "clear" => writer.clear_screen(),
             "tests" => {
                  vga_buffer::color_test();
